@@ -163,13 +163,15 @@ fn main() -> ! {
 
     core1
         .spawn(unsafe { &mut CORE1_STACK.mem }, move || loop {
-            let state = {
+            let values = {
                 let _lock = Spinlock0::claim();
                 cortex_m::interrupt::free(|cs| unsafe {
-                    KEYBOARD.borrow(cs).borrow().as_ref().unwrap().get_state()
+                    let keyboard = KEYBOARD.borrow(cs).borrow();
+                    let keyboard = keyboard.as_ref().unwrap();
+                    keyboard.key_switches.values()
                 })
             };
-            display.draw(&state);
+            display.draw(&values);
         })
         .unwrap();
 

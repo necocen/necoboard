@@ -25,6 +25,7 @@ pub struct KeyMatrix<
     delay: D,
     filters: [[KalmanFilter; COLS]; ROWS],
     buffers: [[Buffer<3>; COLS]; ROWS],
+    values: [[u16; COLS]; ROWS],
 }
 
 impl<
@@ -86,7 +87,12 @@ impl<
             delay,
             filters: unsafe { transmute_copy::<_, [[KalmanFilter; COLS]; ROWS]>(&filters) },
             buffers: unsafe { transmute_copy::<_, [[Buffer<3>; COLS]; ROWS]>(&buffers) },
+            values: [[0; COLS]; ROWS],
         }
+    }
+
+    pub fn values(&self) -> [[u16; COLS]; ROWS] {
+        self.values
     }
 }
 
@@ -132,6 +138,7 @@ impl<
                 //     defmt::debug!("{}", val);
                 // }
                 let val = self.filters[row][col].predict(val.into());
+                self.values[row][col] = val as u16;
                 if self.buffers[row][col].update(val > 40.0) {
                     let key_identifier = SwitchIdentifier {
                         row: row as u8,

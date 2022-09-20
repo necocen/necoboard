@@ -2,16 +2,14 @@ use core::ops::Deref;
 
 use embedded_graphics::{
     image::{Image, ImageRaw},
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::Point,
-    text::Text,
+    primitives::{Line, PrimitiveStyle, StyledDrawable},
     Drawable,
 };
-use heapless::String;
+
 use rp2040_hal::I2C;
 use rp_pico::pac::i2c0::RegisterBlock;
-use rustkbd::keyboard::KeyboardState;
 use ssd1306::{
     mode::BufferedGraphicsMode,
     prelude::{DisplayConfig, I2CInterface},
@@ -19,8 +17,6 @@ use ssd1306::{
     size::DisplaySize128x32,
     I2CDisplayInterface, Ssd1306,
 };
-
-use crate::layout::Layer;
 
 pub struct Display<I: Deref<Target = RegisterBlock>, J> {
     cats: [ImageRaw<'static, BinaryColor>; 4],
@@ -49,8 +45,7 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
         }
     }
 
-    pub fn draw<const RO: usize>(&mut self, state: &KeyboardState<Layer, RO>) {
-        let char_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    pub fn draw(&mut self, values: &[[u16; 12]; 4]) {
         self.display.clear();
 
         // cat
@@ -58,20 +53,19 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
         let image = Image::new(&cat, Point::new(0, 0));
         image.draw(&mut self.display).ok();
 
-        // print pressed keys
-        let mut string = String::<6>::new();
-        state
-            .keys
-            .iter()
-            .filter(|key| key.is_keyboard_key())
-            .cloned()
-            .map(From::from)
-            .for_each(|c| {
-                string.push(c).ok();
-            });
-        Text::new(string.as_str(), Point::new(64, 10), char_style)
-            .draw(&mut self.display)
-            .ok();
+        // chart
+        for (i, row) in values.iter().enumerate() {
+            for (j, v) in row.iter().enumerate() {
+                let k = (i * 12 + j) as i32;
+                let v = *v as i32 / 5 + 4;
+                Line::new(Point::new(64 + k, 32), Point::new(64 + k, 32 - v))
+                    .draw_styled(
+                        &PrimitiveStyle::with_stroke(BinaryColor::On, 1),
+                        &mut self.display,
+                    )
+                    .ok();
+            }
+        }
 
         self.display.flush().ok();
         self.frame += 1;
