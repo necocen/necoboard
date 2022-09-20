@@ -6,7 +6,9 @@ use core::cell::RefCell;
 use cortex_m::{delay::Delay, interrupt::Mutex};
 use defmt_rtt as _;
 use embedded_hal::watchdog::{Watchdog as _, WatchdogEnable};
-use fugit::{ExtU32, MillisDurationU32, RateExtU32};
+use embedded_time::{
+    duration::Extensions as _, fixed_point::FixedPoint as _, rate::Extensions as _,
+};
 use layout::{Layer, Layout};
 use panic_probe as _;
 use rp_pico::{
@@ -48,7 +50,7 @@ static mut KEYBOARD: Mutex<RefCell<Option<KeyboardType>>> = Mutex::new(RefCell::
 static mut ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
 static mut CORE1_STACK: Stack<4096> = Stack::new();
 
-const USB_SEND_INTERVAL: MillisDurationU32 = MillisDurationU32::millis(10);
+const USB_SEND_INTERVAL_MICROSECONDS: u32 = 10_000;
 
 #[entry]
 fn main() -> ! {
@@ -84,7 +86,9 @@ fn main() -> ! {
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
     let mut alarm = timer.alarm_0().unwrap();
-    alarm.schedule(USB_SEND_INTERVAL).unwrap();
+    alarm
+        .schedule(USB_SEND_INTERVAL_MICROSECONDS.microseconds())
+        .unwrap();
     alarm.enable_interrupt();
     cortex_m::interrupt::free(|cs| unsafe {
         ALARM.borrow(cs).replace(Some(alarm));
@@ -107,7 +111,7 @@ fn main() -> ! {
         pac.I2C0,
         pins.gpio12.into_mode(),
         pins.gpio13.into_mode(),
-        400u32.kHz(),
+        400_000u32.Hz(),
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
     );
@@ -131,7 +135,7 @@ fn main() -> ! {
         pins.gpio28.into(),
         Adc::new(pac.ADC, &mut pac.RESETS),
         pins.gpio26.into_floating_input(),
-        Delay::new(core.SYST, clocks.system_clock.freq().to_Hz()),
+        Delay::new(core.SYST, clocks.system_clock.freq().integer()),
     );
 
     let device_info = DeviceInfo {
@@ -170,7 +174,7 @@ fn main() -> ! {
         .unwrap();
 
     watchdog.pause_on_debug(true);
-    watchdog.start(10.secs());
+    watchdog.start(1_000_000.microseconds());
 
     loop {
         cortex_m::interrupt::free(|cs| unsafe {
@@ -206,7 +210,9 @@ fn TIMER_IRQ_0() {
         let mut alarm = ALARM.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
-        alarm.schedule(USB_SEND_INTERVAL).unwrap();
+        alarm
+            .schedule(USB_SEND_INTERVAL_MICROSECONDS.microseconds())
+            .unwrap();
         alarm.enable_interrupt();
         if let Some(Err(e)) = KEYBOARD
             .borrow(cs)
