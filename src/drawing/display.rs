@@ -66,6 +66,14 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
                     .ok();
             }
         }
+        // threshold
+        let v = 40 / 5 + 4;
+        Line::new(Point::new(64, 32 - v), Point::new(128, 32 - v))
+            .draw_styled(
+                &PrimitiveStyle::with_stroke(BinaryColor::On, 1),
+                &mut self.display,
+            )
+            .ok();
 
         self.display.flush().ok();
         self.frame += 1;

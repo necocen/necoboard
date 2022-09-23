@@ -36,6 +36,8 @@ impl<
         const COLS: usize,
     > KeyMatrix<D, P, ROWS, CSELS, COLS>
 {
+    pub const THRESHOLD: f32 = 40.0;
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut rows: [DynPin; ROWS],
@@ -113,8 +115,6 @@ impl<
         self.opa_shutdown.set_high().ok();
         self.mux_enabled.set_low().ok();
 
-        self.delay.delay_us(10);
-
         for col in 0..COLS {
             // マルチプレクサの設定
             self.mux_enabled.set_high().ok();
@@ -128,18 +128,18 @@ impl<
 
             for row in 0..ROWS {
                 self.rst_charge.set_low().ok();
-                self.delay.delay_us(50);
+                self.delay.delay_us(40);
                 self.rows[row].set_high().unwrap();
-                self.delay.delay_us(10);
+                self.delay.delay_us(8);
 
                 let val: u16 = self.adc.read(&mut self.adc_pin).unwrap_or(0);
-                self.delay.delay_us(10);
+                self.delay.delay_us(8);
                 // if col == 0 && row == 0 {
                 //     defmt::debug!("{}", val);
                 // }
                 let val = self.filters[row][col].predict(val.into());
                 self.values[row][col] = val as u16;
-                if self.buffers[row][col].update(val > 40.0) {
+                if self.buffers[row][col].update(val > Self::THRESHOLD) {
                     let key_identifier = SwitchIdentifier {
                         row: row as u8,
                         col: col as u8,
