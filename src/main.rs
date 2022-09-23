@@ -18,7 +18,7 @@ use rp_pico::{
         gpio::{bank0::Gpio26, FloatingInput, Pin},
         multicore::{Multicore, Stack},
         sio::Spinlock0,
-        timer::{Alarm, Alarm0},
+        timer::{Alarm, Alarm0, Alarm1},
         usb::UsbBus,
         Adc, Clock, Sio, Timer, Watchdog, I2C,
     },
@@ -47,15 +47,18 @@ type KeyboardType = Controller<
     Layout,
 >;
 static mut KEYBOARD: Mutex<RefCell<Option<KeyboardType>>> = Mutex::new(RefCell::new(None));
-static mut ALARM: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
-static mut CORE1_STACK: Stack<4096> = Stack::new();
+static mut ALARM0: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
+static mut ALARM1: Mutex<RefCell<Option<Alarm1>>> = Mutex::new(RefCell::new(None));
+static mut WATCHDOG: Mutex<RefCell<Option<Watchdog>>> = Mutex::new(RefCell::new(None));
 
 const USB_SEND_INTERVAL_MICROSECONDS: u32 = 10_000;
+const SWITCH_SCAN_INTERVAL_MICROSECONDS: u32 = 5_000;
 
 #[entry]
 fn main() -> ! {
     // These variables must be static due to lifetime constraints
     static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
+    static mut CORE1_STACK: Stack<4096> = Stack::new();
 
     defmt::info!("Launching necoboard v2!");
 
@@ -85,15 +88,20 @@ fn main() -> ! {
     .unwrap();
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
-    let mut alarm = timer.alarm_0().unwrap();
-    alarm
+    let mut alarm0 = timer.alarm_0().unwrap();
+    alarm0
         .schedule(USB_SEND_INTERVAL_MICROSECONDS.microseconds())
         .unwrap();
-    alarm.enable_interrupt();
+    alarm0.enable_interrupt();
+    let mut alarm1 = timer.alarm_1().unwrap();
+    alarm1
+        .schedule(SWITCH_SCAN_INTERVAL_MICROSECONDS.microseconds())
+        .unwrap();
+    alarm1.enable_interrupt();
     cortex_m::interrupt::free(|cs| unsafe {
-        ALARM.borrow(cs).replace(Some(alarm));
+        ALARM0.borrow(cs).replace(Some(alarm0));
+        ALARM1.borrow(cs).replace(Some(alarm1));
     });
-
     let usb_bus = UsbBusAllocator::new(UsbBus::new(
         pac.USBCTRL_REGS,
         pac.USBCTRL_DPRAM,
@@ -151,43 +159,41 @@ fn main() -> ! {
         key_matrix,
         Layout::default(),
     );
+
+    watchdog.pause_on_debug(true);
+    watchdog.start(1_000_000.microseconds());
     cortex_m::interrupt::free(|cs| unsafe {
         KEYBOARD.borrow(cs).replace(Some(keyboard));
+        WATCHDOG.borrow(cs).replace(Some(watchdog));
     });
 
     unsafe {
         // Enable the USB interrupt
         NVIC::unmask(Interrupt::USBCTRL_IRQ);
         NVIC::unmask(Interrupt::TIMER_IRQ_0);
+        NVIC::unmask(Interrupt::TIMER_IRQ_1);
     }
 
     core1
-        .spawn(unsafe { &mut CORE1_STACK.mem }, move || loop {
+        .spawn(&mut CORE1_STACK.mem, move || loop {
             let values = {
                 let _lock = Spinlock0::claim();
                 cortex_m::interrupt::free(|cs| unsafe {
-                    let keyboard = KEYBOARD.borrow(cs).borrow();
-                    let keyboard = keyboard.as_ref().unwrap();
-                    keyboard.key_switches.values()
+                    KEYBOARD
+                        .borrow(cs)
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .key_switches
+                        .values()
                 })
             };
             display.draw(&values);
         })
         .unwrap();
 
-    watchdog.pause_on_debug(true);
-    watchdog.start(1_000_000.microseconds());
-
     loop {
-        cortex_m::interrupt::free(|cs| unsafe {
-            let _lock = Spinlock0::claim();
-            KEYBOARD
-                .borrow(cs)
-                .borrow_mut()
-                .as_mut()
-                .map(Controller::main_loop);
-        });
-        watchdog.feed();
+        cortex_m::asm::wfi();
     }
 }
 
@@ -209,7 +215,7 @@ fn USBCTRL_IRQ() {
 fn TIMER_IRQ_0() {
     cortex_m::interrupt::free(|cs| unsafe {
         let _lock = Spinlock0::claim();
-        let mut alarm = ALARM.borrow(cs).borrow_mut();
+        let mut alarm = ALARM0.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
         alarm
@@ -224,5 +230,30 @@ fn TIMER_IRQ_0() {
         {
             defmt::warn!("UsbError: {}", defmt::Debug2Format(&e));
         }
+    });
+}
+
+#[allow(non_snake_case)]
+#[interrupt]
+fn TIMER_IRQ_1() {
+    cortex_m::interrupt::free(|cs| unsafe {
+        let _lock = Spinlock0::claim();
+        let mut alarm = ALARM1.borrow(cs).borrow_mut();
+        let alarm = alarm.as_mut().unwrap();
+        alarm.clear_interrupt();
+        alarm
+            .schedule(SWITCH_SCAN_INTERVAL_MICROSECONDS.microseconds())
+            .unwrap();
+        alarm.enable_interrupt();
+        KEYBOARD
+            .borrow(cs)
+            .borrow_mut()
+            .as_mut()
+            .map(Controller::main_loop);
+        WATCHDOG
+            .borrow(cs)
+            .borrow_mut()
+            .as_mut()
+            .map(Watchdog::feed);
     });
 }
