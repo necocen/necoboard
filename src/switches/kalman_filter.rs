@@ -1,23 +1,23 @@
 #[derive(Debug, Clone)]
 pub struct KalmanFilter {
     state: Option<Gaussian>,
+    state_sigma: f32,
+    noise_sigma: f32,
 }
 
 impl KalmanFilter {
-    const STATE_SIGMA: f32 = 2.0;
-    const NOISE_SIGMA: f32 = 10.0;
-
-    pub fn new() -> KalmanFilter {
-        KalmanFilter { state: None }
+    pub fn new(state_sigma: f32, noise_sigma: f32) -> KalmanFilter {
+        KalmanFilter {
+            state: None,
+            state_sigma,
+            noise_sigma,
+        }
     }
 
     pub fn predict(&mut self, observation: f32) -> f32 {
-        // Kalman filter
-        // TODO: チャタリング対策
-
         if let Some(ref mut state) = self.state {
-            let prior = Gaussian::new(state.mu, state.sigma + Self::NOISE_SIGMA);
-            let gain = prior.sigma / (prior.sigma + Self::STATE_SIGMA);
+            let prior = Gaussian::new(state.mu, state.sigma + self.noise_sigma);
+            let gain = prior.sigma / (prior.sigma + self.state_sigma);
             *state = Gaussian::new(
                 prior.mu + gain * (observation - prior.mu),
                 (1.0 - gain) * prior.sigma,
@@ -25,7 +25,7 @@ impl KalmanFilter {
             return state.mu;
         }
 
-        self.state = Some(Gaussian::new(observation, Self::STATE_SIGMA));
+        self.state = Some(Gaussian::new(observation, self.state_sigma));
         observation
     }
 }

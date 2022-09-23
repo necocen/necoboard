@@ -66,7 +66,7 @@ impl<
             unsafe { MaybeUninit::uninit().assume_init() };
         for slot in filters.iter_mut() {
             for slot in slot.iter_mut() {
-                *slot = MaybeUninit::new(KalmanFilter::new());
+                *slot = MaybeUninit::new(KalmanFilter::new(2.0, 10.0));
             }
         }
 
