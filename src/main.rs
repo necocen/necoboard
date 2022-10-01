@@ -58,6 +58,7 @@ static SLEEP_MODE: AtomicBool = AtomicBool::new(false);
 static mut LAST_KEYS_ON: Mutex<RefCell<u64>> = Mutex::new(RefCell::new(0));
 
 const USB_SEND_INTERVAL_MICROSECONDS: u32 = 10_000;
+const USB_SEND_SLEEP_INTERVAL_MICROSECONDS: u32 = 100_000;
 const SWITCH_SCAN_INTERVAL_MICROSECONDS: u32 = 5_000;
 const SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS: u32 = 50_000;
 const SLEEP_MODE_MICROSECONDS: u64 = 10_000_000;
@@ -185,33 +186,28 @@ fn main() -> ! {
     }
 
     core1
-        .spawn(&mut CORE1_STACK.mem, move || {
-            let mut sleep_mode = false;
-            loop {
-                let new_sleep_mode = SLEEP_MODE.load(Ordering::Relaxed);
-                if !sleep_mode && new_sleep_mode {
-                    // スリープモードに入った最初のフレームでは黒く塗る
-                    display.draw_sleep();
+        .spawn(&mut CORE1_STACK.mem, move || loop {
+            if SLEEP_MODE.load(Ordering::Relaxed) {
+                // スリープモードに入った最初のフレームでは黒く塗る
+                display.draw_sleep();
+                while SLEEP_MODE.load(Ordering::Relaxed) {
+                    core::hint::spin_loop()
                 }
-                sleep_mode = new_sleep_mode;
-                if sleep_mode {
-                    continue;
-                }
-
-                let values = {
-                    let _lock = Spinlock0::claim();
-                    cortex_m::interrupt::free(|cs| unsafe {
-                        KEYBOARD
-                            .borrow(cs)
-                            .borrow()
-                            .as_ref()
-                            .unwrap()
-                            .key_switches
-                            .values()
-                    })
-                };
-                display.draw(&values);
             }
+
+            let values = {
+                let _lock = Spinlock0::claim();
+                cortex_m::interrupt::free(|cs| unsafe {
+                    KEYBOARD
+                        .borrow(cs)
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .key_switches
+                        .values()
+                })
+            };
+            display.draw(&values);
         })
         .unwrap();
 
@@ -241,9 +237,12 @@ fn TIMER_IRQ_0() {
         let mut alarm = ALARM0.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
-        alarm
-            .schedule(USB_SEND_INTERVAL_MICROSECONDS.microseconds())
-            .unwrap();
+        let interval = if SLEEP_MODE.load(Ordering::Relaxed) {
+            USB_SEND_SLEEP_INTERVAL_MICROSECONDS
+        } else {
+            USB_SEND_INTERVAL_MICROSECONDS
+        };
+        alarm.schedule(interval.microseconds()).unwrap();
         alarm.enable_interrupt();
         if let Some(Err(e)) = KEYBOARD
             .borrow(cs)
