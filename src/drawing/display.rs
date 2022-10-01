@@ -78,4 +78,9 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
         self.display.flush().ok();
         self.frame += 1;
     }
+
+    pub fn draw_sleep(&mut self) {
+        self.display.clear();
+        self.display.flush().ok();
+    }
 }

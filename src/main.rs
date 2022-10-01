@@ -185,24 +185,33 @@ fn main() -> ! {
     }
 
     core1
-        .spawn(&mut CORE1_STACK.mem, move || loop {
-            if SLEEP_MODE.load(Ordering::Relaxed) {
-                // TODO: スリープモードに入ったときだけ黒く塗るのが理想
-                continue;
+        .spawn(&mut CORE1_STACK.mem, move || {
+            let mut sleep_mode = false;
+            loop {
+                let new_sleep_mode = SLEEP_MODE.load(Ordering::Relaxed);
+                if !sleep_mode && new_sleep_mode {
+                    // スリープモードに入った最初のフレームでは黒く塗る
+                    display.draw_sleep();
+                }
+                sleep_mode = new_sleep_mode;
+                if sleep_mode {
+                    continue;
+                }
+
+                let values = {
+                    let _lock = Spinlock0::claim();
+                    cortex_m::interrupt::free(|cs| unsafe {
+                        KEYBOARD
+                            .borrow(cs)
+                            .borrow()
+                            .as_ref()
+                            .unwrap()
+                            .key_switches
+                            .values()
+                    })
+                };
+                display.draw(&values);
             }
-            let values = {
-                let _lock = Spinlock0::claim();
-                cortex_m::interrupt::free(|cs| unsafe {
-                    KEYBOARD
-                        .borrow(cs)
-                        .borrow()
-                        .as_ref()
-                        .unwrap()
-                        .key_switches
-                        .values()
-                })
-            };
-            display.draw(&values);
         })
         .unwrap();
 
