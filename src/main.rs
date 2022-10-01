@@ -276,12 +276,14 @@ fn TIMER_IRQ_1() {
         let mut sleep_mode = SLEEP_MODE.load(Ordering::Relaxed);
         if keyboard.key_switches.is_any_key_pressed() {
             *last_counter = counter;
-            sleep_mode = false;
-        } else if should_sleep {
+            if sleep_mode {
+                defmt::info!("Woke up!");
+                sleep_mode = false;
+            }
+        } else if should_sleep && !sleep_mode {
+            defmt::info!("Going to sleep...");
             sleep_mode = true;
         }
-
-        defmt::info!("sleep: {}", sleep_mode);
 
         let interval = if sleep_mode {
             SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS
