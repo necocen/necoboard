@@ -96,6 +96,13 @@ impl<
     pub fn values(&self) -> [[u16; COLS]; ROWS] {
         self.values
     }
+
+    pub fn is_any_key_pressed(&self) -> bool {
+        self.values
+            .map(|row| row.iter().any(|v| *v as f32 > Self::THRESHOLD))
+            .iter()
+            .any(|r| *r)
+    }
 }
 
 impl<

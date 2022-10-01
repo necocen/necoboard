@@ -1,7 +1,10 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
+use core::{
+    cell::RefCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use cortex_m::{delay::Delay, interrupt::Mutex};
 use defmt_rtt as _;
@@ -49,9 +52,15 @@ static mut KEYBOARD: Mutex<RefCell<Option<KeyboardType>>> = Mutex::new(RefCell::
 static mut ALARM0: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
 static mut ALARM1: Mutex<RefCell<Option<Alarm1>>> = Mutex::new(RefCell::new(None));
 static mut WATCHDOG: Mutex<RefCell<Option<Watchdog>>> = Mutex::new(RefCell::new(None));
+static mut TIMER: Mutex<RefCell<Option<Timer>>> = Mutex::new(RefCell::new(None));
+static SLEEP_MODE: AtomicBool = AtomicBool::new(false);
+// 最後に何らかのキーがオンだった時のカウンタ
+static mut LAST_KEYS_ON: Mutex<RefCell<u64>> = Mutex::new(RefCell::new(0));
 
 const USB_SEND_INTERVAL_MICROSECONDS: u32 = 10_000;
 const SWITCH_SCAN_INTERVAL_MICROSECONDS: u32 = 5_000;
+const SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS: u32 = 50_000;
+const SLEEP_MODE_MICROSECONDS: u64 = 10_000_000;
 
 #[entry]
 fn main() -> ! {
@@ -98,8 +107,10 @@ fn main() -> ! {
         .unwrap();
     alarm1.enable_interrupt();
     cortex_m::interrupt::free(|cs| unsafe {
+        LAST_KEYS_ON.borrow(cs).replace(timer.get_counter());
         ALARM0.borrow(cs).replace(Some(alarm0));
         ALARM1.borrow(cs).replace(Some(alarm1));
+        TIMER.borrow(cs).replace(Some(timer));
     });
     let usb_bus = UsbBusAllocator::new(UsbBus::new(
         pac.USBCTRL_REGS,
@@ -175,6 +186,10 @@ fn main() -> ! {
 
     core1
         .spawn(&mut CORE1_STACK.mem, move || loop {
+            if SLEEP_MODE.load(Ordering::Relaxed) {
+                // TODO: スリープモードに入ったときだけ黒く塗るのが理想
+                continue;
+            }
             let values = {
                 let _lock = Spinlock0::claim();
                 cortex_m::interrupt::free(|cs| unsafe {
@@ -240,19 +255,38 @@ fn TIMER_IRQ_1() {
         let mut alarm = ALARM1.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
-        alarm
-            .schedule(SWITCH_SCAN_INTERVAL_MICROSECONDS.microseconds())
-            .unwrap();
+
+        let mut keyboard = KEYBOARD.borrow(cs).borrow_mut();
+        let keyboard = keyboard.as_mut().unwrap();
+        keyboard.main_loop();
+
+        let counter = TIMER.borrow(cs).borrow().as_ref().unwrap().get_counter();
+        let mut last_counter = LAST_KEYS_ON.borrow(cs).borrow_mut();
+        let should_sleep = (counter - *last_counter) >= SLEEP_MODE_MICROSECONDS; // 10 secs
+
+        let mut sleep_mode = SLEEP_MODE.load(Ordering::Relaxed);
+        if keyboard.key_switches.is_any_key_pressed() {
+            *last_counter = counter;
+            sleep_mode = false;
+        } else if should_sleep {
+            sleep_mode = true;
+        }
+
+        defmt::info!("sleep: {}", sleep_mode);
+
+        let interval = if sleep_mode {
+            SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS
+        } else {
+            SWITCH_SCAN_INTERVAL_MICROSECONDS
+        };
+
+        alarm.schedule(interval.microseconds()).unwrap();
         alarm.enable_interrupt();
-        KEYBOARD
-            .borrow(cs)
-            .borrow_mut()
-            .as_mut()
-            .map(Controller::main_loop);
         WATCHDOG
             .borrow(cs)
             .borrow_mut()
             .as_mut()
             .map(Watchdog::feed);
+        SLEEP_MODE.store(sleep_mode, Ordering::Relaxed);
     });
 }
