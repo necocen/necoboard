@@ -57,9 +57,7 @@ static SLEEP_MODE: AtomicBool = AtomicBool::new(false);
 static mut LAST_KEYS_ON: Mutex<RefCell<Instant>> = Mutex::new(RefCell::new(Instant::from_ticks(0)));
 
 const USB_SEND_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(10);
-const USB_SEND_SLEEP_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(100);
 const SWITCH_SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(5);
-const SWITCH_SCAN_SLEEP_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(50);
 const SLEEP_MODE_INTERVAL: MicrosDurationU32 = MicrosDurationU32::secs(10);
 
 #[entry]
@@ -232,12 +230,7 @@ fn TIMER_IRQ_0() {
         let mut alarm = ALARM0.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
-        let interval = if SLEEP_MODE.load(Ordering::Relaxed) {
-            USB_SEND_SLEEP_INTERVAL
-        } else {
-            USB_SEND_INTERVAL
-        };
-        alarm.schedule(interval).unwrap();
+        alarm.schedule(USB_SEND_INTERVAL).unwrap();
         alarm.enable_interrupt();
         if let Some(Err(e)) = KEYBOARD
             .borrow(cs)
@@ -279,13 +272,7 @@ fn TIMER_IRQ_1() {
             sleep_mode = true;
         }
 
-        let interval = if sleep_mode {
-            SWITCH_SCAN_SLEEP_INTERVAL
-        } else {
-            SWITCH_SCAN_INTERVAL
-        };
-
-        alarm.schedule(interval).unwrap();
+        alarm.schedule(SWITCH_SCAN_INTERVAL).unwrap();
         alarm.enable_interrupt();
         WATCHDOG
             .borrow(cs)
