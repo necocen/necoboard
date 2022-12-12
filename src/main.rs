@@ -9,11 +9,10 @@ use core::{
 use cortex_m::{delay::Delay, interrupt::Mutex};
 use defmt_rtt as _;
 use embedded_hal::watchdog::{Watchdog as _, WatchdogEnable};
-use embedded_time::{
-    duration::Extensions as _, fixed_point::FixedPoint as _, rate::Extensions as _,
-};
+use fugit::{ExtU32, MicrosDurationU32, RateExtU32};
 use layout::Layout;
 use panic_probe as _;
+use rp2040_hal::timer::Instant;
 use rp_pico::{
     entry,
     hal::{
@@ -55,13 +54,13 @@ static mut WATCHDOG: Mutex<RefCell<Option<Watchdog>>> = Mutex::new(RefCell::new(
 static mut TIMER: Mutex<RefCell<Option<Timer>>> = Mutex::new(RefCell::new(None));
 static SLEEP_MODE: AtomicBool = AtomicBool::new(false);
 // 最後に何らかのキーがオンだった時のカウンタ
-static mut LAST_KEYS_ON: Mutex<RefCell<u64>> = Mutex::new(RefCell::new(0));
+static mut LAST_KEYS_ON: Mutex<RefCell<Instant>> = Mutex::new(RefCell::new(Instant::from_ticks(0)));
 
-const USB_SEND_INTERVAL_MICROSECONDS: u32 = 10_000;
-const USB_SEND_SLEEP_INTERVAL_MICROSECONDS: u32 = 100_000;
-const SWITCH_SCAN_INTERVAL_MICROSECONDS: u32 = 5_000;
-const SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS: u32 = 50_000;
-const SLEEP_MODE_MICROSECONDS: u64 = 10_000_000;
+const USB_SEND_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(10);
+const USB_SEND_SLEEP_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(100);
+const SWITCH_SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(5);
+const SWITCH_SCAN_SLEEP_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(50);
+const SLEEP_MODE_INTERVAL: MicrosDurationU32 = MicrosDurationU32::secs(10);
 
 #[entry]
 fn main() -> ! {
@@ -98,14 +97,10 @@ fn main() -> ! {
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
     let mut alarm0 = timer.alarm_0().unwrap();
-    alarm0
-        .schedule(USB_SEND_INTERVAL_MICROSECONDS.microseconds())
-        .unwrap();
+    alarm0.schedule(USB_SEND_INTERVAL).unwrap();
     alarm0.enable_interrupt();
     let mut alarm1 = timer.alarm_1().unwrap();
-    alarm1
-        .schedule(SWITCH_SCAN_INTERVAL_MICROSECONDS.microseconds())
-        .unwrap();
+    alarm1.schedule(SWITCH_SCAN_INTERVAL).unwrap();
     alarm1.enable_interrupt();
     cortex_m::interrupt::free(|cs| unsafe {
         LAST_KEYS_ON.borrow(cs).replace(timer.get_counter());
@@ -130,7 +125,7 @@ fn main() -> ! {
         pac.I2C0,
         pins.gpio12.into_mode(),
         pins.gpio13.into_mode(),
-        400_000u32.Hz(),
+        400u32.kHz(),
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
     );
@@ -154,7 +149,7 @@ fn main() -> ! {
         pins.gpio28.into(),
         Adc::new(pac.ADC, &mut pac.RESETS),
         pins.gpio26.into_floating_input(),
-        Delay::new(core.SYST, clocks.system_clock.freq().integer()),
+        Delay::new(core.SYST, clocks.system_clock.freq().to_Hz()),
     );
 
     let device_info = DeviceInfo {
@@ -172,7 +167,7 @@ fn main() -> ! {
     );
 
     watchdog.pause_on_debug(true);
-    watchdog.start(1_000_000.microseconds());
+    watchdog.start(1.secs());
     cortex_m::interrupt::free(|cs| unsafe {
         KEYBOARD.borrow(cs).replace(Some(keyboard));
         WATCHDOG.borrow(cs).replace(Some(watchdog));
@@ -238,11 +233,11 @@ fn TIMER_IRQ_0() {
         let alarm = alarm.as_mut().unwrap();
         alarm.clear_interrupt();
         let interval = if SLEEP_MODE.load(Ordering::Relaxed) {
-            USB_SEND_SLEEP_INTERVAL_MICROSECONDS
+            USB_SEND_SLEEP_INTERVAL
         } else {
-            USB_SEND_INTERVAL_MICROSECONDS
+            USB_SEND_INTERVAL
         };
-        alarm.schedule(interval.microseconds()).unwrap();
+        alarm.schedule(interval).unwrap();
         alarm.enable_interrupt();
         if let Some(Err(e)) = KEYBOARD
             .borrow(cs)
@@ -270,7 +265,7 @@ fn TIMER_IRQ_1() {
 
         let counter = TIMER.borrow(cs).borrow().as_ref().unwrap().get_counter();
         let mut last_counter = LAST_KEYS_ON.borrow(cs).borrow_mut();
-        let should_sleep = (counter - *last_counter) >= SLEEP_MODE_MICROSECONDS; // 10 secs
+        let should_sleep = (counter - *last_counter) >= SLEEP_MODE_INTERVAL;
 
         let mut sleep_mode = SLEEP_MODE.load(Ordering::Relaxed);
         if keyboard.key_switches.is_any_key_pressed() {
@@ -285,12 +280,12 @@ fn TIMER_IRQ_1() {
         }
 
         let interval = if sleep_mode {
-            SWITCH_SCAN_SLEEP_INTERVAL_MICROSECONDS
+            SWITCH_SCAN_SLEEP_INTERVAL
         } else {
-            SWITCH_SCAN_INTERVAL_MICROSECONDS
+            SWITCH_SCAN_INTERVAL
         };
 
-        alarm.schedule(interval.microseconds()).unwrap();
+        alarm.schedule(interval).unwrap();
         alarm.enable_interrupt();
         WATCHDOG
             .borrow(cs)
