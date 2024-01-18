@@ -31,3 +31,7 @@ impl Layout {
     "};
 }
 ```
+
+## PCB
+
+![kicad](./images/kicad.png)
