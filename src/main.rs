@@ -12,12 +12,16 @@ use embedded_hal::watchdog::{Watchdog as _, WatchdogEnable};
 use fugit::{ExtU32, MicrosDurationU32, RateExtU32};
 use layout::Layout;
 use panic_probe as _;
-use rp2040_hal::timer::Instant;
+use rp2040_hal::{
+    adc::AdcPin,
+    gpio::{FunctionNull, PullDown, PullUp},
+    timer::Instant,
+};
 use rp_pico::{
     entry,
     hal::{
         clocks,
-        gpio::{bank0::Gpio26, FloatingInput, Pin},
+        gpio::{bank0::Gpio26, Pin},
         multicore::{Multicore, Stack},
         sio::Spinlock0,
         timer::{Alarm, Alarm0, Alarm1},
@@ -44,7 +48,7 @@ type KeyboardType = Controller<
     2,
     12,
     UsbCommunicator<'static, UsbBus>,
-    KeyMatrix<Delay, Pin<Gpio26, FloatingInput>, 4, 4, 12>,
+    KeyMatrix<Delay, AdcPin<Pin<Gpio26, FunctionNull, PullDown>>, 4, 4, 12>,
     Layout,
 >;
 static mut KEYBOARD: Mutex<RefCell<Option<KeyboardType>>> = Mutex::new(RefCell::new(None));
@@ -93,7 +97,7 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut alarm0 = timer.alarm_0().unwrap();
     alarm0.schedule(USB_SEND_INTERVAL).unwrap();
     alarm0.enable_interrupt();
@@ -121,9 +125,9 @@ fn main() -> ! {
 
     let i2c = I2C::i2c0(
         pac.I2C0,
-        pins.gpio12.into_mode(),
-        pins.gpio13.into_mode(),
-        400u32.kHz(),
+        pins.gpio12.into_function().into_pull_type::<PullUp>(),
+        pins.gpio13.into_function().into_pull_type::<PullUp>(),
+        400.kHz(),
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
     );
@@ -131,22 +135,22 @@ fn main() -> ! {
 
     let key_matrix = KeyMatrix::new(
         [
-            pins.gpio18.into(),
-            pins.gpio19.into(),
-            pins.gpio20.into(),
-            pins.gpio21.into(),
+            pins.gpio18.into_push_pull_output().into_dyn_pin(),
+            pins.gpio19.into_push_pull_output().into_dyn_pin(),
+            pins.gpio20.into_push_pull_output().into_dyn_pin(),
+            pins.gpio21.into_push_pull_output().into_dyn_pin(),
         ],
         [
-            pins.gpio10.into(),
-            pins.gpio11.into(),
-            pins.gpio9.into(),
-            pins.gpio8.into(),
+            pins.gpio10.into_push_pull_output().into_dyn_pin(),
+            pins.gpio11.into_push_pull_output().into_dyn_pin(),
+            pins.gpio9.into_push_pull_output().into_dyn_pin(),
+            pins.gpio8.into_push_pull_output().into_dyn_pin(),
         ],
-        pins.gpio7.into(),
-        pins.voltage_monitor.into(),
-        pins.gpio28.into(),
+        pins.gpio7.into_push_pull_output().into_dyn_pin(),
+        pins.voltage_monitor.into_push_pull_output().into_dyn_pin(),
+        pins.gpio28.into_push_pull_output().into_dyn_pin(),
         Adc::new(pac.ADC, &mut pac.RESETS),
-        pins.gpio26.into_floating_input(),
+        AdcPin::new(pins.gpio26),
         Delay::new(core.SYST, clocks.system_clock.freq().to_Hz()),
     );
 

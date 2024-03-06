@@ -1,13 +1,13 @@
 use core::ops::Deref;
 
 use embedded_graphics::{
+    draw_target::DrawTarget as _,
     image::{Image, ImageRaw},
     pixelcolor::BinaryColor,
     prelude::Point,
     primitives::{Line, PrimitiveStyle, StyledDrawable},
     Drawable,
 };
-
 use rp2040_hal::I2C;
 use rp_pico::pac::i2c0::RegisterBlock;
 use ssd1306::{
@@ -46,7 +46,7 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
     }
 
     pub fn draw(&mut self, values: &[[u16; 12]; 4]) {
-        self.display.clear();
+        self.display.clear(BinaryColor::Off).ok();
 
         // cat
         let cat = self.cats[(self.frame / 5) % 4];
@@ -80,7 +80,7 @@ impl<I: Deref<Target = RegisterBlock>, J> Display<I, J> {
     }
 
     pub fn draw_sleep(&mut self) {
-        self.display.clear();
+        self.display.clear(BinaryColor::Off).ok();
         self.display.flush().ok();
     }
 }
