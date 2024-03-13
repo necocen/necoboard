@@ -15,7 +15,7 @@ debug = 2
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustkbd = { git = "https://github.com/necocen/rustkbd", rev = "361987f5c1d5f29cf3b0ed43290e5558242046af" }
+rustkbd = { git = "https://github.com/necocen/rustkbd", rev = "ab2b03e6" }
 rp-pico = "0.8.0"
 rp2040-hal = { version = "0.9.2", features = ["eh1_0_alpha"] }
 cortex-m = "0.7.7"
