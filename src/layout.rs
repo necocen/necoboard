@@ -36,7 +36,7 @@ impl Layout {
         | Trn |     |     |     |     |     |     |     |     |MVlDn|MMute|MVlUp|
         | Trn |     |     |     |     |     |     |     |     |     |  Up |     |
         | Trn |     |     |     |     |     |MPrev|MPlPs|MNext| Left| Down|Right|
-        |     |     |     | Trn | Trn |     |     |     |     |     |     |     |
+        |     |     |     | Trn | Trn | Trn |     |     |     |     |     |     |
     "};
 }
 
