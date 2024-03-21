@@ -8,8 +8,7 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle, StyledDrawable},
     Drawable,
 };
-use rp2040_hal::I2C;
-use rp_pico::pac::i2c0::RegisterBlock;
+use rp2040_hal::{pac::i2c0::RegisterBlock, I2C};
 use ssd1306::{
     mode::BufferedGraphicsMode,
     prelude::{DisplayConfig, I2CInterface},

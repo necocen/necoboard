@@ -6,31 +6,25 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use cortex_m::{delay::Delay, interrupt::Mutex};
+use cortex_m::delay::Delay;
+use critical_section::Mutex;
 use defmt_rtt as _;
-use embedded_hal::watchdog::{Watchdog as _, WatchdogEnable};
+use drawing::Display;
 use fugit::{ExtU32, MicrosDurationU32, RateExtU32};
+use hal::{
+    adc::AdcPin,
+    clocks, entry,
+    gpio::{Pins, PullUp},
+    multicore::{Multicore, Stack},
+    pac::{interrupt, CorePeripherals, Interrupt, Peripherals, NVIC},
+    sio::Spinlock0,
+    timer::{Alarm, Alarm0, Alarm1, Instant},
+    usb::UsbBus,
+    Adc, Clock, Sio, Timer, Watchdog, I2C,
+};
 use layout::Layout;
 use panic_probe as _;
-use rp2040_hal::{
-    adc::AdcPin,
-    gpio::{FunctionNull, PullDown, PullUp},
-    timer::Instant,
-};
-use rp_pico::{
-    entry,
-    hal::{
-        clocks,
-        gpio::{bank0::Gpio26, Pin},
-        multicore::{Multicore, Stack},
-        sio::Spinlock0,
-        timer::{Alarm, Alarm0, Alarm1},
-        usb::UsbBus,
-        Adc, Clock, Sio, Timer, Watchdog, I2C,
-    },
-    pac::{interrupt, CorePeripherals, Interrupt, Peripherals, NVIC},
-    Pins,
-};
+use rp2040_hal as hal;
 use rustkbd::{
     keyboard::Controller,
     usb::{DeviceInfo, UsbCommunicator},
@@ -38,19 +32,20 @@ use rustkbd::{
 use switches::KeyMatrix;
 use usb_device::class_prelude::UsbBusAllocator;
 
-use crate::drawing::Display;
-
 mod drawing;
 mod layout;
 mod switches;
 
-type KeyboardType = Controller<
-    2,
-    12,
-    UsbCommunicator<'static, UsbBus>,
-    KeyMatrix<Delay, AdcPin<Pin<Gpio26, FunctionNull, PullDown>>, 4, 4, 12>,
-    Layout,
->;
+/// The linker will place this boot block at the start of our program image. We
+/// need this to help the ROM bootloader get our code up and running.
+/// Note: This boot block is not necessary when using a rp-hal based BSP
+/// as the BSPs already perform this step.
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_GENERIC_03H;
+
+type KeyboardType =
+    Controller<2, 12, UsbCommunicator<'static, UsbBus>, KeyMatrix<Delay, 4, 4, 12>, Layout>;
 static mut KEYBOARD: Mutex<RefCell<Option<KeyboardType>>> = Mutex::new(RefCell::new(None));
 static mut ALARM0: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
 static mut ALARM1: Mutex<RefCell<Option<Alarm1>>> = Mutex::new(RefCell::new(None));
@@ -63,17 +58,32 @@ static mut LAST_KEYS_ON: Mutex<RefCell<Instant>> = Mutex::new(RefCell::new(Insta
 const USB_SEND_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(10);
 const SWITCH_SCAN_INTERVAL: MicrosDurationU32 = MicrosDurationU32::millis(5);
 const SLEEP_MODE_INTERVAL: MicrosDurationU32 = MicrosDurationU32::secs(10);
+const XTAL_FREQ_HZ: u32 = 12_000_000;
+
+static mut CORE1_STACK: Stack<4096> = Stack::new();
 
 #[entry]
 fn main() -> ! {
     // These variables must be static due to lifetime constraints
     static mut USB_BUS: Option<UsbBusAllocator<UsbBus>> = None;
-    static mut CORE1_STACK: Stack<4096> = Stack::new();
 
     defmt::info!("Launching necoboard v2!");
 
     let mut pac = Peripherals::take().unwrap();
     let core = CorePeripherals::take().unwrap();
+    // Set up the watchdog driver - needed by the clock setup code
+    let mut watchdog = Watchdog::new(pac.WATCHDOG);
+    // The default is to generate a 125 MHz system clock
+    let clocks = clocks::init_clocks_and_plls(
+        XTAL_FREQ_HZ,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .unwrap();
     // The single-cycle I/O block controls our GPIO pins
     let mut sio = Sio::new(pac.SIO);
     let pins = Pins::new(
@@ -82,20 +92,6 @@ fn main() -> ! {
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
-    // Set up the watchdog driver - needed by the clock setup code
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    // The default is to generate a 125 MHz system clock
-    let clocks = clocks::init_clocks_and_plls(
-        rp_pico::XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let mut alarm0 = timer.alarm_0().unwrap();
@@ -104,7 +100,7 @@ fn main() -> ! {
     let mut alarm1 = timer.alarm_1().unwrap();
     alarm1.schedule(SWITCH_SCAN_INTERVAL).unwrap();
     alarm1.enable_interrupt();
-    cortex_m::interrupt::free(|cs| unsafe {
+    critical_section::with(|cs| unsafe {
         LAST_KEYS_ON.borrow(cs).replace(timer.get_counter());
         ALARM0.borrow(cs).replace(Some(alarm0));
         ALARM1.borrow(cs).replace(Some(alarm1));
@@ -135,22 +131,22 @@ fn main() -> ! {
 
     let key_matrix = KeyMatrix::new(
         [
-            pins.gpio18.into_push_pull_output().into_dyn_pin(),
-            pins.gpio19.into_push_pull_output().into_dyn_pin(),
-            pins.gpio20.into_push_pull_output().into_dyn_pin(),
-            pins.gpio21.into_push_pull_output().into_dyn_pin(),
+            pins.gpio18.reconfigure().into_dyn_pin(),
+            pins.gpio19.reconfigure().into_dyn_pin(),
+            pins.gpio20.reconfigure().into_dyn_pin(),
+            pins.gpio21.reconfigure().into_dyn_pin(),
         ],
         [
-            pins.gpio10.into_push_pull_output().into_dyn_pin(),
-            pins.gpio11.into_push_pull_output().into_dyn_pin(),
-            pins.gpio9.into_push_pull_output().into_dyn_pin(),
-            pins.gpio8.into_push_pull_output().into_dyn_pin(),
+            pins.gpio10.reconfigure().into_dyn_pin(),
+            pins.gpio11.reconfigure().into_dyn_pin(),
+            pins.gpio9.reconfigure().into_dyn_pin(),
+            pins.gpio8.reconfigure().into_dyn_pin(),
         ],
-        pins.gpio7.into_push_pull_output().into_dyn_pin(),
-        pins.voltage_monitor.into_push_pull_output().into_dyn_pin(),
-        pins.gpio28.into_push_pull_output().into_dyn_pin(),
+        pins.gpio7.reconfigure().into_dyn_pin(),
+        pins.gpio29.reconfigure().into_dyn_pin(),
+        pins.gpio28.reconfigure().into_dyn_pin(),
         Adc::new(pac.ADC, &mut pac.RESETS),
-        AdcPin::new(pins.gpio26),
+        AdcPin::new(pins.gpio26).unwrap(),
         Delay::new(core.SYST, clocks.system_clock.freq().to_Hz()),
     );
 
@@ -170,7 +166,7 @@ fn main() -> ! {
 
     watchdog.pause_on_debug(true);
     watchdog.start(1.secs());
-    cortex_m::interrupt::free(|cs| unsafe {
+    critical_section::with(|cs| unsafe {
         KEYBOARD.borrow(cs).replace(Some(keyboard));
         WATCHDOG.borrow(cs).replace(Some(watchdog));
     });
@@ -183,7 +179,7 @@ fn main() -> ! {
     }
 
     core1
-        .spawn(&mut CORE1_STACK.mem, move || loop {
+        .spawn(unsafe { &mut CORE1_STACK.mem }, move || loop {
             if SLEEP_MODE.load(Ordering::Relaxed) {
                 // スリープモードに入った最初のフレームでは黒く塗る
                 display.draw_sleep();
@@ -194,7 +190,7 @@ fn main() -> ! {
 
             let values = {
                 let _lock = Spinlock0::claim();
-                cortex_m::interrupt::free(|cs| unsafe {
+                critical_section::with(|cs| unsafe {
                     KEYBOARD
                         .borrow(cs)
                         .borrow()
@@ -216,7 +212,7 @@ fn main() -> ! {
 #[allow(non_snake_case)]
 #[interrupt]
 fn USBCTRL_IRQ() {
-    cortex_m::interrupt::free(|cs| unsafe {
+    critical_section::with(|cs| unsafe {
         let _lock = Spinlock0::claim();
         KEYBOARD
             .borrow(cs)
@@ -229,7 +225,7 @@ fn USBCTRL_IRQ() {
 #[allow(non_snake_case)]
 #[interrupt]
 fn TIMER_IRQ_0() {
-    cortex_m::interrupt::free(|cs| unsafe {
+    critical_section::with(|cs| unsafe {
         let _lock = Spinlock0::claim();
         let mut alarm = ALARM0.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
@@ -250,7 +246,7 @@ fn TIMER_IRQ_0() {
 #[allow(non_snake_case)]
 #[interrupt]
 fn TIMER_IRQ_1() {
-    cortex_m::interrupt::free(|cs| unsafe {
+    critical_section::with(|cs| unsafe {
         let _lock = Spinlock0::claim();
         let mut alarm = ALARM1.borrow(cs).borrow_mut();
         let alarm = alarm.as_mut().unwrap();
@@ -278,11 +274,9 @@ fn TIMER_IRQ_1() {
 
         alarm.schedule(SWITCH_SCAN_INTERVAL).unwrap();
         alarm.enable_interrupt();
-        WATCHDOG
-            .borrow(cs)
-            .borrow_mut()
-            .as_mut()
-            .map(Watchdog::feed);
+        if let Some(w) = WATCHDOG.borrow(cs).borrow_mut().as_mut() {
+            w.feed()
+        }
         SLEEP_MODE.store(sleep_mode, Ordering::Relaxed);
     });
 }

@@ -1,42 +1,30 @@
 use core::mem::{transmute_copy, MaybeUninit};
 
-use cortex_m::prelude::_embedded_hal_adc_OneShot;
-use embedded_hal::{adc::Channel, blocking::delay::DelayUs, digital::v2::OutputPin as _};
+use embedded_hal::{adc::OneShot as _, blocking::delay::DelayUs, digital::v2::OutputPin as _};
 use rp2040_hal::{
-    adc::Adc,
-    gpio::{DynPinId, FunctionSioOutput, Pin, PullDown},
+    adc::{Adc, AdcPin},
+    gpio::{bank0::Gpio26, DynPinId, FunctionNull, FunctionSioOutput, Pin, PullDown},
 };
 use rustkbd::{keyboard::KeySwitches, Vec};
 
 use super::{buffer::Buffer, kalman_filter::KalmanFilter, switch_identifier::SwitchIdentifier};
 
-pub struct KeyMatrix<
-    D: DelayUs<u16>,
-    P: Channel<Adc, ID = u8>,
-    const ROWS: usize,
-    const CSELS: usize,
-    const COLS: usize,
-> {
+pub struct KeyMatrix<D: DelayUs<u16>, const ROWS: usize, const CSELS: usize, const COLS: usize> {
     rows: [Pin<DynPinId, FunctionSioOutput, PullDown>; ROWS],
     mux_selectors: [Pin<DynPinId, FunctionSioOutput, PullDown>; CSELS],
     mux_enabled: Pin<DynPinId, FunctionSioOutput, PullDown>,
     opa_shutdown: Pin<DynPinId, FunctionSioOutput, PullDown>,
     rst_charge: Pin<DynPinId, FunctionSioOutput, PullDown>,
     adc: Adc,
-    adc_pin: P,
+    adc_pin: AdcPin<Pin<Gpio26, FunctionNull, PullDown>>,
     delay: D,
     filters: [[KalmanFilter; COLS]; ROWS],
     buffers: [[Buffer<3>; COLS]; ROWS],
     values: [[u16; COLS]; ROWS],
 }
 
-impl<
-        D: DelayUs<u16>,
-        P: Channel<Adc, ID = u8>,
-        const ROWS: usize,
-        const CSELS: usize,
-        const COLS: usize,
-    > KeyMatrix<D, P, ROWS, CSELS, COLS>
+impl<D: DelayUs<u16>, const ROWS: usize, const CSELS: usize, const COLS: usize>
+    KeyMatrix<D, ROWS, CSELS, COLS>
 {
     pub const THRESHOLD: f32 = 40.0;
 
@@ -48,9 +36,9 @@ impl<
         mut opa_shutdown: Pin<DynPinId, FunctionSioOutput, PullDown>,
         mut rst_charge: Pin<DynPinId, FunctionSioOutput, PullDown>,
         adc: Adc,
-        adc_pin: P,
+        adc_pin: AdcPin<Pin<Gpio26, FunctionNull, PullDown>>,
         delay: D,
-    ) -> KeyMatrix<D, P, ROWS, CSELS, COLS> {
+    ) -> KeyMatrix<D, ROWS, CSELS, COLS> {
         mux_enabled.set_high().ok();
         opa_shutdown.set_low().ok();
         rst_charge.set_high().ok();
@@ -98,13 +86,8 @@ impl<
     }
 }
 
-impl<
-        D: DelayUs<u16>,
-        P: Channel<Adc, ID = u8>,
-        const ROWS: usize,
-        const CSELS: usize,
-        const COLS: usize,
-    > KeySwitches<2, 12> for KeyMatrix<D, P, ROWS, CSELS, COLS>
+impl<D: DelayUs<u16>, const ROWS: usize, const CSELS: usize, const COLS: usize> KeySwitches<2, 12>
+    for KeyMatrix<D, ROWS, CSELS, COLS>
 {
     type Identifier = SwitchIdentifier;
 
@@ -135,7 +118,7 @@ impl<
                 let val: u16 = self.adc.read(&mut self.adc_pin).unwrap_or(0);
                 self.delay.delay_us(8);
                 // if col == 0 && row == 0 {
-                //     defmt::debug!("{}", val);
+                // defmt::debug!("{}", val);
                 // }
                 let val = self.filters[row][col].predict(val.into());
                 self.values[row][col] = val as u16;
